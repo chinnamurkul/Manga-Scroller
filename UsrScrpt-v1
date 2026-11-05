@@ -1,0 +1,151 @@
+// ==UserScript==
+// @name         Manga Auto Scroller v2
+// @namespace    manga-autoscroll
+// @version      2.0
+// @description  Smooth auto scroll with speed control for manga readers
+// @match        *://*/*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+  if (window.__mangaAutoScroll) return;
+  window.__mangaAutoScroll = true;
+
+  const KEY = 'mangaAutoScrollSpeed';
+  const MIN = 10, MAX = 600, STEP = 10; // pixels per second
+
+  let speed = 80;
+  try { speed = Number(localStorage.getItem(KEY)) || speed; } catch (e) {}
+
+  let running = false;
+  let lastTime = 0;
+  let rafId = 0;
+
+  // ---------- UI ----------
+  const box = document.createElement('div');
+  box.style.cssText = [
+    'position:fixed', 'right:12px', 'bottom:12px', 'z-index:2147483647',
+    'display:flex', 'align-items:center', 'gap:8px', 'padding:8px 10px',
+    'background:rgba(20,20,20,.85)', 'color:#fff', 'border-radius:10px',
+    'font:13px system-ui,sans-serif', 'opacity:.35', 'transition:opacity .2s',
+    'user-select:none'
+  ].join(';');
+  box.addEventListener('mouseenter', () => (box.style.opacity = '1'));
+  box.addEventListener('mouseleave', () => (box.style.opacity = running ? '.35' : '.6'));
+
+  const btn = document.createElement('button');
+  btn.style.cssText = 'cursor:pointer;border:0;border-radius:6px;padding:4px 10px;font-size:13px';
+  btn.textContent = '▶ Play';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = MIN; slider.max = MAX; slider.step = STEP; slider.value = speed;
+  slider.style.width = '110px';
+
+  const label = document.createElement('span');
+  label.style.minWidth = '56px';
+
+  box.append(btn, slider, label);
+  document.body.appendChild(box);
+
+  function updateLabel() { label.textContent = speed + ' px/s'; }
+  updateLabel();
+
+  // ---------- Scroll loop ----------
+  // Fractional pixels get rounded by scrollBy, so accumulate them manually.
+  let carry = 0;
+  let scroller = null;
+  let stuckFor = 0; // seconds spent unable to scroll further
+
+  // Find what actually scrolls: the page, or an inner container.
+  function findScroller() {
+    const de = document.scrollingElement || document.documentElement;
+    if (de.scrollHeight - de.clientHeight > 50) return de;
+    let best = null, bestH = 0;
+    document.querySelectorAll('*').forEach((el) => {
+      const oy = getComputedStyle(el).overflowY;
+      if ((oy === 'auto' || oy === 'scroll') &&
+          el.scrollHeight - el.clientHeight > 50 && el.clientHeight > bestH) {
+        best = el; bestH = el.clientHeight;
+      }
+    });
+    return best || de;
+  }
+
+  function tick(now) {
+    if (!running) return;
+    const dt = Math.min((now - lastTime) / 1000, 0.1); // clamp after tab switches
+    lastTime = now;
+
+    carry += speed * dt;
+    const whole = Math.floor(carry);
+    if (whole > 0) {
+      carry -= whole;
+      const before = scroller.scrollTop;
+      // 'instant' avoids the site's CSS smooth-scrolling swallowing small steps
+      scroller.scrollBy({ top: whole, left: 0, behavior: 'instant' });
+      if (scroller.scrollTop === before) {
+        stuckFor += dt;
+        // Wait a few seconds so lazy-loaded images can appear before giving up
+        if (stuckFor > 3) {
+          const fresh = findScroller();
+          if (fresh !== scroller) { scroller = fresh; stuckFor = 0; }
+          else { stop(); return; }
+        }
+      } else {
+        stuckFor = 0;
+      }
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function start() {
+    if (running) return;
+    running = true;
+    carry = 0;
+    stuckFor = 0;
+    scroller = findScroller();
+    lastTime = performance.now();
+    btn.textContent = '⏸ Pause';
+    box.style.opacity = '.35';
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function stop() {
+    running = false;
+    cancelAnimationFrame(rafId);
+    btn.textContent = '▶ Play';
+    box.style.opacity = '.6';
+  }
+
+  function toggle() { running ? stop() : start(); }
+
+  function setSpeed(v) {
+    speed = Math.max(MIN, Math.min(MAX, v));
+    slider.value = speed;
+    updateLabel();
+    try { localStorage.setItem(KEY, speed); } catch (e) {}
+  }
+
+  // ---------- Controls ----------
+  btn.addEventListener('click', toggle);
+  slider.addEventListener('input', () => setSpeed(Number(slider.value)));
+
+  document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) && t !== slider) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+
+    switch (e.key.toLowerCase()) {
+      case 's': toggle(); break;                 // S = start/stop
+      case ']': setSpeed(speed + STEP); break;   // ] = faster
+      case '[': setSpeed(speed - STEP); break;   // [ = slower
+    }
+  });
+
+  // Pause when the reader grabs control with wheel or touch.
+  const userTakeover = () => { if (running) stop(); };
+  window.addEventListener('wheel', userTakeover, { passive: true, capture: true });
+  window.addEventListener('touchstart', userTakeover, { passive: true });
+})();
